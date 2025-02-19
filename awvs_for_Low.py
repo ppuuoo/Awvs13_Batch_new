@@ -1,16 +1,21 @@
 import json
 import time
 import requests
-requests.packages.urllib3.disable_warnings()  #用于忽略SSL不安全信息
+
+requests.packages.urllib3.disable_warnings()  # 忽略 SSL 证书警告
 
 
-class AwvsApi(object):
+class AwvsApi:
     """
-    Main Class
+    Awvs 扫描 API
     """
+
     @staticmethod
-    def Usage():
-        usage = """
+    def usage():
+        """
+        使用说明
+        """
+        usage_text = """
         +--------------------------------------------------------------+
         +                                                              +
         +            Awvs Tool for Low configuration VPS               +
@@ -20,147 +25,195 @@ class AwvsApi(object):
         +                    admin@e-wolf.top                          +
         +                                                              +
         +--------------------------------------------------------------+
-        Press your filename to start it!
-        Example: target.txt
-        format:http://www.example.com
+        运行方式: 
+        python AwvsApi.py 
         """
-        print(usage)
+        print(usage_text)
 
     def __init__(self):
-        self.info_color = "\033[32m[info]\033[0m"
-        self.error_color = "\033[31m[Error]\033[0m"
-        self.file_name = "target.txt"  # 文件名
-        self.api_host = "https://127.0.0.1:13443/"  # API地址
-        self.api_key = "1986ad8c0a5b3df767028d5f3c06e936c7x34f541c03e44baab3b565fa49756b7"  #API key
-        self.scan_mode = "11111111-1111-1111-1111-111111111112"  # 扫描模式
-        self.scan_speed = "sequential"  # 扫描速度
-        self.max_task = 5  # 最大同步任务
-        self.target_list_len = 0 #任务总数
-        self.target_list = []
-        self.target_dict = {}
+        """
+        初始化 Awvs API
+        """
+        self.info_color = "\033[32m[INFO]\033[0m"
+        self.error_color = "\033[31m[ERROR]\033[0m"
+
+        self.file_name = "target.txt"  # 目标文件
+        self.api_host = "https://x.x.x.x:13443/"  # API 地址
+        self.api_key = "xxxxx"  # API KEY
+        self.scan_mode = "11111111-1111-1111-1111-111111111111"  # 扫描模式
+        self.scan_speed = "moderate"  # 扫描速度
+        self.max_task = 2  # 最大同时扫描任务数
+
+        self.target_list = []  # 目标列表
+        self.target_dict = {}  # 目标 -> ID 映射
+
         self.headers = {
             'X-Auth': self.api_key,
             'content-type': 'application/json'
         }
-        connect_status = self.checkConnect()
-        if connect_status:
-            print(self.info_color + "Awvs Api Connect Success")
+
+        if self.check_connect():
+            print(self.info_color + " Awvs API 连接成功")
             self.start()
         else:
-            print(self.error_color + "Awvs Api Connect Error!")
+            print(self.error_color + " Awvs API 连接失败，请检查！")
+
+    def check_connect(self):
+        """
+        检查 Awvs API 连接
+        """
+        api = self.api_host + "api/v1/info"
+        try:
+            response = requests.get(url=api, headers=self.headers, verify=False)
+            return response.status_code == 200
+        except Exception as e:
+            print(self.error_color + f" 连接异常: {str(e)}")
+            return False
+
+    def get_existing_targets(self):
+        """
+        获取已存在的目标，防止重复导入
+        """
+        api = self.api_host + "api/v1/targets"
+        existing_targets = {}
+
+        try:
+            response = requests.get(url=api, headers=self.headers, verify=False)
+            if response.status_code == 200:
+                for target in response.json().get("targets", []):
+                    existing_targets[target["address"]] = target["target_id"]
+        except Exception as e:
+            print(self.error_color + f" 获取已存在目标失败: {str(e)}")
+
+        return existing_targets
+
+    def get_running_scans(self):
+        """
+        获取正在运行的扫描，防止重复扫描
+        """
+        api = self.api_host + "api/v1/scans"
+        running_scans = {}
+
+        try:
+            response = requests.get(url=api, headers=self.headers, verify=False)
+            if response.status_code == 200:
+                for scan in response.json().get("scans", []):
+                    if scan["current_session"]["status"] in ["processing", "scheduled"]:
+                        running_scans[scan["target_id"]] = True
+        except Exception as e:
+            print(self.error_color + f" 获取正在运行的扫描失败: {str(e)}")
+
+        return running_scans
 
     def start(self):
         """
-        start do it !
+        读取目标文件并开始扫描
         """
-        print(self.info_color + "Read the target file .....")
-        self.readTargetFile()
-        self.target_list_len = len(self.target_list)
-        print(self.info_color + "All  \033[34m" + str(self.target_list_len) +
-              "\033[0m  Targets")
-        print(self.info_color + "Scan Speed:" + self.scan_speed)
-        self.addTarget()
+        print(self.info_color + " 读取目标文件...")
+        self.read_target_file()
+        print(self.info_color + f" 发现 {len(self.target_list)} 个目标")
+        
+        existing_targets = self.get_existing_targets()  # 获取已存在的目标
+        print(self.info_color + f" 服务器已有 {len(existing_targets)} 个目标")
 
-    def addTarget(self):
-        for i in self.target_list:
-            data = {
-                'address': i,
-                'description': 'awvs-auto',
-                'criticality': '10'
-            }
-            api = self.api_host + "/api/v1/targets"
-            add_result = requests.post(url=api,
-                                       data=json.dumps(data),
-                                       headers=self.headers,
-                                       verify=False)
-            target_id = add_result.json().get("target_id")
-            self.setSpeed(target_id)
-            self.target_dict[i] = target_id
-        self.scanTarget()
+        for target in self.target_list:
+            if target in existing_targets:
+                self.target_dict[target] = existing_targets[target]
+                print(self.info_color + f" {target} 已存在，跳过添加")
+            else:
+                self.add_target(target)
 
-    def scanTarget(self):
-        target_num = 0
-        api = self.api_host + "/api/v1/me/stats"
-        while True:
-            stats_result = requests.get(url=api,
-                                        headers=self.headers,
-                                        verify=False)
-            scan_num = stats_result.json().get("scans_running_count")
-            if scan_num < self.max_task:
-                if target_num == self.target_list_len:
-                    print(self.info_color + "Done!")
-                    break
-                scan_target = self.target_list[target_num]
-                scan_id = self.target_dict[scan_target]
-                self.addScan(scan_target, scan_id)
-                target_num += 1
-            time.sleep(10)  # 检测延时
+        self.scan_target()
 
-    def addScan(self, target, id):
+    def read_target_file(self):
         """
-        add scan for run
+        读取目标文件
         """
-        api = self.api_host + "/api/v1/scans"
+        try:
+            with open(self.file_name, 'r') as target_file:
+                self.target_list = [line.strip() for line in target_file if line.strip()]
+            print(self.info_color + " 目标文件读取成功")
+        except Exception as e:
+            print(self.error_color + f" 目标文件读取失败: {str(e)}")
+
+    def add_target(self, target):
+        """
+        添加目标到 Awvs
+        """
         data = {
-            "target_id": id,
-            "profile_id": self.scan_mode,
-            "schedule": {
-                "disable": False,
-                "start_date": None,
-                "time_sensitive": False
-            }
+            'address': target,
+            'description': 'awvs-auto',
+            'criticality': '10'
         }
-        add_result = requests.post(url=api,
-                                   data=json.dumps(data),
-                                   headers=self.headers,
-                                   allow_redirects=False,
-                                   verify=False)
-        if add_result.status_code == 201:
-            print(self.info_color + target + " ---add Success")
-        else:
-            print(self.error_color + target + "---add Failed")
+        api = self.api_host + "api/v1/targets"
 
-    def setSpeed(self, target_id):
+        try:
+            response = requests.post(url=api, data=json.dumps(data), headers=self.headers, verify=False)
+            if response.status_code == 201:
+                target_id = response.json().get("target_id")
+                self.target_dict[target] = target_id
+                print(self.info_color + f" {target} 添加成功")
+                self.set_speed(target_id)
+            else:
+                print(self.error_color + f" {target} 添加失败")
+        except Exception as e:
+            print(self.error_color + f" {target} 添加异常: {str(e)}")
+
+    def set_speed(self, target_id):
         """
-        Set Scan Speed
+        设置扫描速度
         """
-        api = self.api_host + "/api/v1/targets/" + target_id + "/configuration"
+        api = self.api_host + f"api/v1/targets/{target_id}/configuration"
         data = {"scan_speed": self.scan_speed}
-        speed_result = requests.patch(url=api, data=data, headers=self.headers, verify=False)
+        requests.patch(url=api, data=json.dumps(data), headers=self.headers, verify=False)
 
-    def readTargetFile(self):
+    def scan_target(self):
         """
-        Get all the target to list
+        依次扫描目标
         """
-        try:
-            target_file = open(self.file_name, 'r')
-            targets = target_file.readlines()
-            for i in targets:
-                self.target_list.append(i.strip("\n"))
-            print(self.info_color + "Target read success")
-        except Exception as e:
-            print(self.error_color + "Target File Error,Please Check")
+        running_scans = self.get_running_scans()
+        print(self.info_color + f" 当前有 {len(running_scans)} 个正在扫描")
 
-    def checkConnect(self):
+        target_num = 0
+        api = self.api_host + "api/v1/me/stats"
+
+        while target_num < len(self.target_list):
+            stats_result = requests.get(url=api, headers=self.headers, verify=False)
+            scan_num = stats_result.json().get("scans_running_count", 0)
+
+            if scan_num < self.max_task:
+                scan_target = self.target_list[target_num]
+                scan_id = self.target_dict.get(scan_target)
+
+                if scan_id in running_scans:
+                    print(self.info_color + f" {scan_target} 正在扫描中，跳过")
+                else:
+                    self.add_scan(scan_target, scan_id)
+
+                target_num += 1
+
+            time.sleep(10)
+
+        print(self.info_color + " 所有扫描任务已启动！")
+
+    def add_scan(self, target, target_id):
         """
-        Check if the Awvs Connect Success
-        return bool
+        启动扫描
         """
-        api = self.api_host + "/api/v1/info"
-        try:
-            check_result = requests.get(url=api,
-                                        headers=self.headers,
-                                        verify=False)
-        except Exception as e:
-            return False
+        api = self.api_host + "api/v1/scans"
+        data = {
+            "target_id": target_id,
+            "profile_id": self.scan_mode,
+            "schedule": {"disable": False, "start_date": None, "time_sensitive": False}
+        }
+
+        response = requests.post(url=api, data=json.dumps(data), headers=self.headers, verify=False)
+        if response.status_code == 201:
+            print(self.info_color + f" {target} 扫描启动成功")
         else:
-            return True
+            print(self.error_color + f" {target} 扫描启动失败")
 
 
 if __name__ == "__main__":
-    try:
-        AwvsApi.Usage()
-        scan = AwvsApi()
-    except Exception as e:
-        print(AwvsApi.error_color + "Done!")
-    
+    AwvsApi.usage()
+    AwvsApi()
